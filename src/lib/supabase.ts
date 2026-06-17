@@ -98,3 +98,34 @@ export async function deleteEmployee(id: string) {
     throw error;
   }
 }
+
+// Auto-cleanup: every 20 interventions, generate PDF report and purge
+export async function checkAndCleanupInterventions(interventions: Intervention[]): Promise<boolean> {
+  const CLEANUP_THRESHOLD = 20;
+
+  if (interventions.length >= CLEANUP_THRESHOLD) {
+    try {
+      // Dynamically import the PDF generator to avoid circular deps
+      const { generateAutoCleanupReportPDF } = await import('../utils/pdfGenerator');
+      
+      // Generate the consolidated PDF report for these interventions
+      generateAutoCleanupReportPDF(interventions.slice(0, CLEANUP_THRESHOLD));
+
+      // Delete the oldest 20 from Supabase
+      const idsToDelete = interventions
+        .slice(0, CLEANUP_THRESHOLD)
+        .map(i => i.id)
+        .filter(Boolean);
+
+      if (idsToDelete.length > 0) {
+        await deleteMultipleInterventions(idsToDelete);
+      }
+
+      return true;
+    } catch (err) {
+      console.error('Auto-cleanup failed:', err);
+      return false;
+    }
+  }
+  return false;
+}

@@ -351,7 +351,7 @@ export default function App() {
         console.error("Failed to update status in Supabase:", err);
       }
     }
-  };
+
     const toggledItem = newList.find(item => item.id === id);
     const label = toggledItem?.status === "termine" ? "Clôturée" : "En cours d'intervention";
     showToastNotification(`Statut mis à jour : ${label} !`);
