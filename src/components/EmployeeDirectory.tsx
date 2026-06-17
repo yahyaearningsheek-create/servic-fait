@@ -35,6 +35,7 @@ export function EmployeeDirectory({ theme }: EmployeeDirectoryProps) {
 
     try {
       const newEmp: Employee = {
+        id: `emp-${Date.now()}`,
         name: newName,
         title: newTitle,
         department: newDepartment
