@@ -27,15 +27,31 @@ import {
   writeJsonToDirectory 
 } from "./utils/localDiskStorage";
 import { generateAndDownloadPDF, generateAndDownloadPhotosPDF } from "./utils/pdfGenerator";
-import { fetchInterventions, saveIntervention, deleteIntervention as deleteInterventionSb, checkAndCleanupInterventions } from "./lib/supabase";
-
+import { 
+  supabase, 
+  getSession, 
+  getUserProfile, 
+  saveUserProfile, 
+  fetchInterventions, 
+  saveIntervention, 
+  deleteIntervention as deleteInterventionSb, 
+  checkAndCleanupInterventions 
+} from "./lib/supabase";
+import { Session } from "@supabase/supabase-js";
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [isLoginMode, setIsLoginMode] = useState(true);
+
   // Stored states
   const [interventions, setInterventions] = useState<Intervention[]>([]);
   const [techProfile, setTechProfile] = useState<TechProfile>({
-    name: "Said Awaleh",
-    title: "Ingénieur Support Informatique",
-    department: "Systèmes d'Information (DSI)",
+    name: "Technicien",
+    title: "Ingénieur Support",
+    department: "DSI",
     centerName: "CNIPLC"
   });
 
@@ -141,26 +157,75 @@ export default function App() {
     loadSavedDirectory();
   }, []);
 
-  // Set up local file picker actions
+  // Fetch auth session on mount
+  useEffect(() => {
+    getSession().then((session) => {
+      setSession(session);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Fetch interventions & profile from DB when session changes
+  useEffect(() => {
+    if (!session) return;
+    
+    // Load profile
+    getUserProfile(session.user.id).then((profile) => {
+      if (profile) setTechProfile(profile);
+    });
+
+    fetchInterventions().then(data => setInterventions(data));
+
+    // Load Local Directory backup folder mapping from IndexedDB
+    getDirectoryHandle().then(handle => {
+      if (handle) {
+        setLocalDirHandle(handle);
+        setLocalDirName(handle.name);
+      }
+    });
+  }, [session]);
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError("");
+
+    try {
+      if (isLoginMode) {
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        setToast({ message: "Inscription réussie ! Vous pouvez maintenant vous connecter.", visible: true });
+        setIsLoginMode(true);
+      }
+    } catch (err: any) {
+      setAuthError(err.message || "Erreur d'authentification");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
   const handleConnectDirectory = async () => {
     try {
-      const win = window as any;
-      if (!win.showDirectoryPicker) {
-        alert("Votre navigateur ne supporte pas l'accès direct aux dossiers locaux (l'API FileSystem Access). Veuillez utiliser Google Chrome, Microsoft Edge ou Opera sur ordinateur.");
-        return;
-      }
-      const handle = await win.showDirectoryPicker({
-        mode: "readwrite"
-      });
-      await saveDirectoryHandle(handle);
-      setLocalDirHandle(handle);
-      setLocalDirName(handle.name);
-      alert(`Dossier local "${handle.name}" connecté avec succès comme stockage professionnel ! Les fiches d'intervention JSON y seront enregistrées automatiquement.`);
-    } catch (err: any) {
-      if (err.name !== "AbortError") {
-        console.error("Error picking directory:", err);
-        alert("Impossible de sélectionner le dossier : " + err.message);
-      }
+      const dirHandle = await (window as any).showDirectoryPicker({ mode: "readwrite" });
+      await saveDirectoryHandle(dirHandle);
+      setLocalDirHandle(dirHandle);
+      setLocalDirName(dirHandle.name);
+      showToastNotification("Dossier de sauvegarde direct connecté !");
+    } catch (err) {
+      console.error("User cancelled or directory select failed.", err);
     }
   };
 
@@ -171,43 +236,6 @@ export default function App() {
     alert("Dossier de sauvegarde locale déconnecté.");
   };
 
-  // Load from local storage on mount
-  useEffect(() => {
-    async function loadData() {
-      const savedProfile = localStorage.getItem("cniplc_tech_profile");
-      if (savedProfile) {
-        try {
-          setTechProfile(JSON.parse(savedProfile));
-        } catch (e) {}
-      }
-
-      try {
-        const sbData = await fetchInterventions();
-        if (sbData && sbData.length > 0) {
-          setInterventions(sbData);
-          localStorage.setItem("cniplc_interventions", JSON.stringify(sbData));
-        } else {
-          const list = localStorage.getItem("cniplc_interventions");
-          if (list) {
-            setInterventions(JSON.parse(list));
-          } else {
-            setInterventions(INITIAL_INTERVENTIONS);
-            localStorage.setItem("cniplc_interventions", JSON.stringify(INITIAL_INTERVENTIONS));
-          }
-        }
-      } catch (err) {
-        console.error("Supabase load error:", err);
-        const list = localStorage.getItem("cniplc_interventions");
-        if (list) {
-          setInterventions(JSON.parse(list));
-        } else {
-          setInterventions(INITIAL_INTERVENTIONS);
-        }
-      }
-    }
-    loadData();
-  }, []);
-
   // Save changes helper
   const saveToLocalStorage = (newList: Intervention[]) => {
     setInterventions(newList);
@@ -215,100 +243,66 @@ export default function App() {
   };
 
   // Handlers
-  const handleCreateIntervention = async (formData: Omit<Intervention, "id" | "refNumber" | "createdAt">) => {
-    // Generate unique index/ref
-    const count = interventions.length + 1;
-    const padding = count.toString().padStart(4, "0");
-    const currentYear = new Date().getFullYear();
-    const refNumber = `${techProfile.centerName || 'CNIPLC'}-${currentYear}-${padding}`;
+  const handleSaveIntervention = async (newInt: Omit<Intervention, "id" | "refNumber" | "createdAt">) => {
     const id = `int-${Date.now()}`;
+    const refNumber = `REF-${Math.floor(Math.random() * 10000).toString().padStart(4, "0")}`;
+    const createdAt = new Date().toISOString();
+    
+    // Default signatureDate only if "termine"
+    const signatureDate = newInt.status === "termine" ? newInt.date : undefined;
 
-    const newInt: Intervention = {
-      ...formData,
+    const fullIntervention: Intervention = {
+      ...newInt,
       id,
       refNumber,
-      createdAt: new Date().toISOString()
-    };
+      createdAt,
+      signatureDate,
+      user_id: session?.user.id
+    } as Intervention;
 
-    let newList = [newInt, ...interventions];
-    setInterventions(newList);
-    localStorage.setItem("cniplc_interventions", JSON.stringify(newList));
+    const updatedList = [fullIntervention, ...interventions];
+    setInterventions(updatedList);
 
-    // Save to Supabase
     try {
-      await saveIntervention(newInt);
+      await saveIntervention(fullIntervention);
       
-      // Auto-cleanup check
-      const didCleanup = await checkAndCleanupInterventions(newList);
-      if (didCleanup) {
-        showToastNotification("Compte-rendu généré et données Supabase nettoyées (20 interventions).");
-        newList = await fetchInterventions();
-        setInterventions(newList);
-        localStorage.setItem("cniplc_interventions", JSON.stringify(newList));
+      // Check auto-cleanup (passing the directory handle so it saves locally)
+      const cleaned = await checkAndCleanupInterventions(updatedList, localDirHandle);
+      if (cleaned) {
+        showToastNotification("Quota atteint : Sauvegarde PDF locale effectuée et purge Supabase réussie.");
+        fetchInterventions().then(setInterventions);
+      } else {
+        // If not cleaned, we just show a normal success
+        showToastNotification("Intervention consignée avec succès dans Supabase !");
+      }
+
+      // Auto Backup Local JSON
+      if (localDirHandle) {
+        try {
+          const content = JSON.stringify(updatedList, null, 2);
+          await writeJsonToDirectory(localDirHandle, "backup_interventions.json", content);
+          console.log("Local directory backup completed.");
+        } catch (backupErr) {
+          console.error("Local backup failed:", backupErr);
+          // Optional: show a warning toast that local backup failed
+        }
       }
     } catch (err) {
-      console.error("Failed to save to Supabase:", err);
+      console.error("Supabase Save Error:", err);
+      showToastNotification("Erreur lors de la sauvegarde Supabase.");
     }
 
-    showToastNotification(`Nouvelle intervention (${newInt.refNumber}) créée et enregistrée avec succès au registre !`);
-
-    const downloadName = `CNIPLC_Fiche_${newInt.refNumber.replace(/\s+/g, "_")}.json`;
-    const dataStr = JSON.stringify(newInt, null, 2);
-
-    // 1. Immediately compile and trigger PDF download as requested
+    // Immediately compile and trigger PDF download/save
     try {
-      await generateAndDownloadPDF(newInt);
-      if (newInt.photos && newInt.photos.length > 0) {
-        await generateAndDownloadPhotosPDF(newInt);
+      await generateAndDownloadPDF(fullIntervention, localDirHandle);
+      if (fullIntervention.photos && fullIntervention.photos.length > 0) {
+        await generateAndDownloadPhotosPDF(fullIntervention, localDirHandle);
       }
     } catch (e) {
       console.error("Auto PDF generation failed:", e);
     }
-
-    // 2. Direct local disk storage routing
-    if (localDirHandle) {
-      try {
-        await writeJsonToDirectory(localDirHandle, downloadName, dataStr);
-        console.log(`Automatic background save succeeded: ${downloadName} stored in user-selected folder.`);
-      } catch (err: any) {
-        console.error("Autosave to connected directory failed:", err);
-        alert(`Attention : la sauvegarde automatique dans le dossier "${localDirName}" a échoué. Le fichier JSON va être téléchargé via le navigateur.`);
-        
-        // Fallback standard browser download
-        triggerBrowserDownload(downloadName, dataStr);
-      }
-    } else {
-      // Fallback standard browser download for JSON
-      triggerBrowserDownload(downloadName, dataStr);
-      
-      // Educational professional prompt
-      setTimeout(() => {
-        alert(
-          "Fiche d'intervention et attestation d'État enregistrées avec succès !\n\n" +
-          "💡 Astuce Professionnelle CNIPLC : " +
-          "Vous pouvez connecter un dossier permanent de votre disque dur (ex: votre dossier Documents ou une clé USB) " +
-          "dans l'onglet 'Préférences' pour sauvegarder vos fiches automatiquement sans aucune question du navigateur."
-        );
-      }, 500);
-    }
     
-    // Auto shift to registry & select for immediate print view
     setActiveTab("registry");
-    setSelectedIntervention(newInt);
-  };
-
-  const triggerBrowserDownload = (fileName: string, content: string) => {
-    try {
-      const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(content);
-      const linkElement = document.createElement('a');
-      linkElement.setAttribute('href', dataUri);
-      linkElement.setAttribute('download', fileName);
-      document.body.appendChild(linkElement);
-      linkElement.click();
-      document.body.removeChild(linkElement);
-    } catch (e) {
-      console.error("Browser download failed:", e);
-    }
   };
 
   const handleDeleteIntervention = async (id: string) => {
@@ -362,9 +356,15 @@ export default function App() {
     }
   };
 
-  const handleSaveProfile = (updatedProfile: TechProfile) => {
+  const handleSaveProfile = async (updatedProfile: TechProfile) => {
     setTechProfile(updatedProfile);
-    localStorage.setItem("cniplc_tech_profile", JSON.stringify(updatedProfile));
+    if (session) {
+      try {
+        await saveUserProfile(session.user.id, updatedProfile);
+      } catch (err) {
+        console.error("Failed to save profile to Supabase:", err);
+      }
+    }
   };
 
   // Export database to standard JSON file
@@ -468,45 +468,141 @@ export default function App() {
     window.print();
   };
 
-  return (
-    <div className={`min-h-screen flex flex-col antialiased transition-colors duration-200 ${
-      isDark ? "bg-slate-950 text-slate-100" : "bg-slate-50 text-slate-900"
-    }`}>
-      {/* State Official Banner Header */}
-      <header className="bg-slate-900 text-white shadow-md border-b-2 border-teal-500/80 no-print">
-        <div className="max-w-7xl mx-auto px-4 py-4 md:py-5 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="bg-slate-800/60 p-1 rounded-xl border border-teal-500/40 shadow-inner shrink-0 flex items-center justify-center">
-              <img 
-                src="/logo.jpeg" 
-                alt="CNIPLC Logo" 
-                className="h-12 w-12 object-contain rounded" 
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                }}
+  // -------------
+  // AUTH RENDERING
+  // -------------
+  if (authLoading) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center ${isDark ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'}`}>
+        <p className="text-xl font-medium animate-pulse">Chargement de la session...</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center p-4 ${isDark ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'}`}>
+        <div className={`max-w-md w-full p-8 rounded-2xl shadow-xl border ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+          <div className="text-center mb-8">
+            <h1 className="text-2xl font-bold text-teal-600 mb-2">CNIPLC IT Manager</h1>
+            <p className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+              Connectez-vous à votre espace technique sécurisé
+            </p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-5">
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>Email Professionnel</label>
+              <input
+                type="email"
+                required
+                value={authEmail}
+                onChange={e => setAuthEmail(e.target.value)}
+                className={`w-full px-4 py-3 rounded-xl border focus:outline-none focus:ring-2 focus:ring-teal-500 ${
+                  isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                }`}
+                placeholder="prenom.nom@cniplc.dj"
               />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-bold text-teal-400 uppercase tracking-widest font-mono">
-                  République de Djibouti - Administration Informatique
-                </span>
+              <label className={`block text-sm font-medium mb-2 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>Mot de passe</label>
+              <input
+                type="password"
+                required
+                value={authPassword}
+                onChange={e => setAuthPassword(e.target.value)}
+                className={`w-full px-4 py-3 rounded-xl border focus:outline-none focus:ring-2 focus:ring-teal-500 ${
+                  isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                }`}
+                placeholder="••••••••"
+              />
+            </div>
+
+            {authError && (
+              <div className="p-3 rounded-lg bg-red-100 text-red-600 text-sm font-medium text-center">
+                {authError}
               </div>
-              <h1 className="text-lg md:text-xl font-extrabold uppercase tracking-tight flex items-center gap-1.5 mt-0.5">
-                {techProfile.centerName || "CNIPLC"} - Registre des Interventions IT
+            )}
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl transition-colors"
+            >
+              {isLoginMode ? "Se Connecter" : "Créer un compte"}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button
+              type="button"
+              onClick={() => setIsLoginMode(!isLoginMode)}
+              className={`text-sm font-medium hover:underline ${isDark ? 'text-teal-400' : 'text-teal-600'}`}
+            >
+              {isLoginMode ? "Pas encore de compte ? S'inscrire" : "Déjà un compte ? Se connecter"}
+            </button>
+          </div>
+        </div>
+
+        {/* Global Toast Notification for Auth */}
+        <AnimatePresence>
+          {toast.visible && (
+            <motion.div
+              initial={{ opacity: 0, y: 50, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.9 }}
+              className="fixed bottom-6 right-6 z-[100] bg-slate-800 text-white px-4 py-3 rounded-lg shadow-xl border border-slate-700 font-medium text-sm flex items-center gap-2"
+            >
+              <CheckCircle2 size={16} className="text-teal-400" />
+              {toast.message}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  // -------------
+  // MAIN APP
+  // -------------
+  return (
+    <div className={`min-h-screen transition-colors duration-200 flex flex-col font-sans ${isDark ? "bg-slate-950 text-slate-100" : "bg-slate-100 text-slate-900"}`}>
+      <header className={`no-print relative border-b transition-colors duration-200 ${isDark ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200"}`}>
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          {/* Logo and Brand */}
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-500 to-emerald-600 flex items-center justify-center text-white font-bold shadow-md">
+              RI
+            </div>
+            <div>
+              <h1 className="text-lg font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-teal-500 to-emerald-500">
+                Registre IT Pro
               </h1>
+              <p className={`text-[10px] uppercase font-bold tracking-widest ${isDark ? "text-slate-500" : "text-slate-400"}`}>
+                CNIPLC - {techProfile.centerName}
+              </p>
             </div>
           </div>
 
-          {/* User quick badge status */}
-          <div className="flex items-center gap-2">
-            <div className="text-right text-xs hidden md:block">
-              <span className="text-slate-400 block font-medium">Informaticien de Service</span>
-              <strong className="text-teal-400 text-sm font-semibold">{techProfile.name}</strong>
-            </div>
-            <div className="w-10 h-10 rounded-full bg-slate-800 border-2 border-teal-500/80 flex items-center justify-center font-bold text-teal-400 text-base shadow uppercase">
-              {techProfile.name[0] || 'T'}
+          <div className="flex items-center gap-4">
+            {/* Visual Indicator for Connected Folder */}
+            {localDirHandle && (
+              <div className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
+                isDark ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+              }`}>
+                <span>📁 Dossier Connecté:</span>
+                <span className="truncate max-w-[100px] font-bold">{localDirName}</span>
+              </div>
+            )}
+            
+            {/* User quick badge status */}
+            <div className="flex items-center gap-2">
+              <div className="text-right text-xs hidden md:block">
+                <span className="text-slate-400 block font-medium">Connecté(e)</span>
+                <strong className="text-teal-400 text-sm font-semibold">{techProfile.name}</strong>
+              </div>
+              <div className="w-10 h-10 rounded-full bg-slate-800 border-2 border-teal-500/80 flex items-center justify-center font-bold text-teal-400 text-base shadow uppercase cursor-pointer" title="Déconnexion" onClick={handleLogout}>
+                {techProfile.name[0] || 'T'}
+              </div>
             </div>
           </div>
         </div>

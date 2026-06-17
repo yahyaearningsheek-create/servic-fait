@@ -25,7 +25,33 @@ const getBase64ImageFromUrl = async (imageUrl: string): Promise<string | null> =
   }
 };
 
-export async function generateAndDownloadPDF(intervention: Intervention): Promise<void> {
+async function savePdfFile(doc: jsPDF, filename: string, directoryHandle?: FileSystemDirectoryHandle | null) {
+  if (directoryHandle) {
+    try {
+      const handle = directoryHandle as any;
+      const options = { mode: "readwrite" as const };
+      if ((await handle.queryPermission(options)) !== "granted") {
+        if ((await handle.requestPermission(options)) !== "granted") {
+          throw new Error("Permission de modification refusée.");
+        }
+      }
+      const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
+      const writable = await (fileHandle as any).createWritable();
+      const blob = doc.output('blob');
+      await writable.write(blob);
+      await writable.close();
+      console.log(`Saved ${filename} to local directory successfully.`);
+      return;
+    } catch (err) {
+      console.error("Failed to save to local directory, falling back to browser download.", err);
+    }
+  }
+  
+  // Fallback
+  doc.save(filename);
+}
+
+export async function generateAndDownloadPDF(intervention: Intervention, directoryHandle?: FileSystemDirectoryHandle | null): Promise<void> {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -355,11 +381,11 @@ export async function generateAndDownloadPDF(intervention: Intervention): Promis
   doc.text("Prestation Validée", 193, currentY + 20, { align: "right" });
 
   // Clean save action
-  const pdfFileName = `CNIPLC_Fiche_${intervention.refNumber.replace(/\s+/g, "_")}.pdf`;
-  doc.save(pdfFileName);
+  const pdfFileName = `CNIPLC_Intervention_${intervention.refNumber.replace(/\s+/g, "_")}.pdf`;
+  await savePdfFile(doc, pdfFileName, directoryHandle);
 }
 
-export async function generateAndDownloadPhotosPDF(intervention: Intervention): Promise<void> {
+export async function generateAndDownloadPhotosPDF(intervention: Intervention, directoryHandle?: FileSystemDirectoryHandle | null): Promise<void> {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -733,11 +759,11 @@ export async function generateAndDownloadPhotosPDF(intervention: Intervention): 
   }
 
   // Save the Photos PDF
-  const photosPdfFileName = `CNIPLC_Fiche_Photos_${intervention.refNumber.replace(/\s+/g, "_")}.pdf`;
-  doc.save(photosPdfFileName);
+  const pdfFileName = `CNIPLC_Photos_${intervention.refNumber.replace(/\s+/g, "_")}.pdf`;
+  await savePdfFile(doc, pdfFileName, directoryHandle);
 }
 
-export async function generateConsolidatedReportPDF(interventions: Intervention[]): Promise<void> {
+export async function generateConsolidatedReportPDF(interventions: Intervention[], directoryHandle?: FileSystemDirectoryHandle | null): Promise<void> {
   if (interventions.length === 0) return;
 
   const doc = new jsPDF({
@@ -1135,10 +1161,10 @@ export async function generateConsolidatedReportPDF(interventions: Intervention[
   drawPageFooter(doc.getNumberOfPages(), totalPagesEstimate);
 
   const consolidatedPdfFileName = `CNIPLC_Rapport_Consolide_Activite_${new Date().toISOString().substring(0, 10)}.pdf`;
-  doc.save(consolidatedPdfFileName);
+  await savePdfFile(doc, consolidatedPdfFileName, directoryHandle);
 }
 
-export function generateAutoCleanupReportPDF(interventions: Intervention[]) {
+export async function generateAutoCleanupReportPDF(interventions: Intervention[], directoryHandle?: FileSystemDirectoryHandle | null) {
   // Wraps the consolidated report function for the auto-cleanup feature
-  generateConsolidatedReportPDF(interventions);
+  await generateConsolidatedReportPDF(interventions, directoryHandle);
 }

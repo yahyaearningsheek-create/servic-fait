@@ -1,11 +1,59 @@
 import { createClient } from '@supabase/supabase-js';
-import { Intervention } from '../types';
+import { Intervention, TechProfile } from '../types';
 
 const supabaseUrl = 'https://pzfcjxjydgopeloxlacg.supabase.co';
 const supabaseKey = 'sb_publishable_GWF5fDuA42RGLsNFCB63kg_S_B89gK7';
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
+// --- AUTHENTICATION ---
+export async function getSession() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) console.error('Error getting session:', error);
+  return data.session;
+}
+
+export async function getUserProfile(userId: string): Promise<TechProfile | null> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .single();
+
+  if (error && error.code !== 'PGRST116') { // PGRST116 means 0 rows
+    console.error('Error fetching profile:', error);
+  }
+  
+  if (data) {
+    return {
+      name: data.name || '',
+      title: data.title || '',
+      department: data.department || '',
+      centerName: data.center_name || ''
+    };
+  }
+  return null;
+}
+
+export async function saveUserProfile(userId: string, profile: TechProfile) {
+  const { error } = await supabase
+    .from('profiles')
+    .upsert({
+      id: userId,
+      name: profile.name,
+      title: profile.title,
+      department: profile.department,
+      center_name: profile.centerName,
+      updated_at: new Date().toISOString()
+    });
+
+  if (error) {
+    console.error('Error saving profile:', error);
+    throw error;
+  }
+}
+
+// --- INTERVENTIONS ---
 export async function fetchInterventions(): Promise<Intervention[]> {
   const { data, error } = await supabase
     .from('interventions')
@@ -54,13 +102,43 @@ export async function deleteMultipleInterventions(ids: string[]) {
   }
 }
 
-// Employees
+// Auto-cleanup
+export async function checkAndCleanupInterventions(interventions: Intervention[], directoryHandle?: FileSystemDirectoryHandle | null): Promise<boolean> {
+  const CLEANUP_THRESHOLD = 20;
+
+  if (interventions.length >= CLEANUP_THRESHOLD) {
+    try {
+      const { generateAutoCleanupReportPDF } = await import('../utils/pdfGenerator');
+      
+      // Pass the directoryHandle so it can save locally if connected
+      await generateAutoCleanupReportPDF(interventions.slice(0, CLEANUP_THRESHOLD), directoryHandle);
+
+      const idsToDelete = interventions
+        .slice(0, CLEANUP_THRESHOLD)
+        .map(i => i.id)
+        .filter(Boolean);
+
+      if (idsToDelete.length > 0) {
+        await deleteMultipleInterventions(idsToDelete);
+      }
+
+      return true;
+    } catch (err) {
+      console.error('Auto-cleanup failed:', err);
+      return false;
+    }
+  }
+  return false;
+}
+
+// --- EMPLOYEES ---
 export interface Employee {
   id?: string;
   name: string;
   title: string;
   department: string;
   created_at?: string;
+  user_id?: string;
 }
 
 export async function fetchEmployees(): Promise<Employee[]> {
@@ -97,35 +175,4 @@ export async function deleteEmployee(id: string) {
     console.error('Error deleting employee:', error);
     throw error;
   }
-}
-
-// Auto-cleanup: every 20 interventions, generate PDF report and purge
-export async function checkAndCleanupInterventions(interventions: Intervention[]): Promise<boolean> {
-  const CLEANUP_THRESHOLD = 20;
-
-  if (interventions.length >= CLEANUP_THRESHOLD) {
-    try {
-      // Dynamically import the PDF generator to avoid circular deps
-      const { generateAutoCleanupReportPDF } = await import('../utils/pdfGenerator');
-      
-      // Generate the consolidated PDF report for these interventions
-      generateAutoCleanupReportPDF(interventions.slice(0, CLEANUP_THRESHOLD));
-
-      // Delete the oldest 20 from Supabase
-      const idsToDelete = interventions
-        .slice(0, CLEANUP_THRESHOLD)
-        .map(i => i.id)
-        .filter(Boolean);
-
-      if (idsToDelete.length > 0) {
-        await deleteMultipleInterventions(idsToDelete);
-      }
-
-      return true;
-    } catch (err) {
-      console.error('Auto-cleanup failed:', err);
-      return false;
-    }
-  }
-  return false;
 }
