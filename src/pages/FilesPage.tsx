@@ -48,7 +48,9 @@ export default function FilesPage() {
     resumeTransfer, 
     cancelTransfer,
     connectToPeer,
-    isPeerConnected
+    isPeerConnected,
+    downloadDirectoryHandle,
+    selectDownloadDirectory
   } = useWebRTC();
 
   // Trigger connection when peers are selected
