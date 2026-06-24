@@ -221,6 +221,27 @@ export default function FilesPage() {
             </p>
           </div>
         )}
+
+        {/* Directory Selection Button */}
+        <div className="mt-4 pt-4 border-t border-slate-200">
+          <p className="text-xs text-slate-500 mb-2 font-semibold">Réception en arrière-plan :</p>
+          <button
+            onClick={selectDownloadDirectory}
+            className={`w-full flex items-center justify-center gap-2 p-3 rounded-xl text-xs font-bold transition-all border ${
+              downloadDirectoryHandle 
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+            }`}
+          >
+            <HardDrive className="w-4 h-4" />
+            {downloadDirectoryHandle ? "Dossier local lié ✓" : "Choisir le dossier de réception"}
+          </button>
+          <p className="text-[9px] text-slate-400 mt-1.5 text-center px-1">
+            {downloadDirectoryHandle 
+              ? `Les fichiers seront enregistrés directement dans le dossier sélectionné.`
+              : `Pour recevoir sans pop-up, liez un dossier local.`}
+          </p>
+        </div>
       </div>
 
       {/* 2. Drag & Drop File upload (Center / Right Column) */}

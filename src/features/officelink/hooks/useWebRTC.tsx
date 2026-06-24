@@ -58,6 +58,8 @@ export interface WebRTCContextType {
   cancelTransfer: (transferId: string) => void;
   connectToPeer: (clientId: string) => Promise<void>;
   isPeerConnected: (clientId: string) => boolean;
+  downloadDirectoryHandle: any | null;
+  selectDownloadDirectory: () => Promise<void>;
 }
 
 const WebRTCContext = createContext<WebRTCContextType | null>(null);
@@ -138,6 +140,22 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
   const [peerMetadata, setPeerMetadata] = useState<{ [clientId: string]: PeerMeta }>({});
   const [activeTransfers, setActiveTransfers] = useState<FileTransfer[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<{ [clientId: string]: 'connecting' | 'connected' | 'failed' }>({});
+  const [downloadDirectoryHandle, setDownloadDirectoryHandle] = useState<any | null>(null);
+
+  const selectDownloadDirectory = async () => {
+    try {
+      if (!('showDirectoryPicker' in window)) {
+        alert("Votre navigateur ne supporte pas l'enregistrement direct dans un dossier (API File System). Le téléchargement se fera dans le dossier par défaut de votre navigateur.");
+        return;
+      }
+      const handle = await (window as any).showDirectoryPicker({
+        mode: 'readwrite'
+      });
+      setDownloadDirectoryHandle(handle);
+    } catch (err) {
+      console.warn("Sélection de dossier annulée ou erreur", err);
+    }
+  };
 
   // === REFS for stable references (prevents useEffect dependency loops) ===
   const peerConnections = useRef<{ [clientId: string]: RTCPeerConnection }>({});
@@ -260,11 +278,27 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
       syncTransferList();
       delete receivedChunks.current[transferId];
 
-      // Auto download
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = transfer.fileName;
-      a.click();
+      // Auto download direct to folder if selected, otherwise fallback to standard download
+      if (downloadDirectoryHandle && transfer.isIncoming) {
+        try {
+          const newFileHandle = await downloadDirectoryHandle.getFileHandle(transfer.fileName, { create: true });
+          const writable = await newFileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          console.log("Fichier enregistré directement dans le dossier :", transfer.fileName);
+        } catch (err) {
+          console.error("Erreur d'écriture dans le dossier choisi. Utilisation du téléchargement classique.", err);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = transfer.fileName;
+          a.click();
+        }
+      } else if (transfer.isIncoming) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = transfer.fileName;
+        a.click();
+      }
 
       // Log activity
       const duration = ((Date.now() - (transfer.startTime || Date.now())) / 1000).toFixed(1);
@@ -435,6 +469,19 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
         };
         activeTransfersRef.current[transferId] = newTransfer;
         syncTransferList();
+
+        // Browser notification for cross-tab visibility
+        try {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            const n = new Notification('📁 Nouveau fichier reçu — OfficeLink', {
+              body: `${senderEmail} vous envoie "${fileName}" (${formatSize(fileSize)}).\nCliquez pour accepter ou refuser.`,
+              icon: '/logo.jpeg',
+              tag: transferId,
+              requireInteraction: true
+            });
+            n.onclick = () => { window.focus(); n.close(); };
+          }
+        } catch (e) { /* Notifications not supported */ }
       } 
       
       else if (msg.type === 'file-accept') {
@@ -1253,7 +1300,9 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
       resumeTransfer,
       cancelTransfer,
       connectToPeer,
-      isPeerConnected
+      isPeerConnected,
+      downloadDirectoryHandle,
+      selectDownloadDirectory
     }}>
       {children}
     </WebRTCContext.Provider>
