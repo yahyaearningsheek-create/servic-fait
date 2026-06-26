@@ -28,11 +28,64 @@ export default function SignalementPage() {
       if (res.ok) {
         setSent(true);
       } else {
-        const data = await res.json().catch(() => ({}));
-        alert("Erreur: " + (data.error || "Impossible d'envoyer le signalement sur Telegram. Vérifiez le token ou le Chat ID."));
+        throw new Error("Backend failed");
       }
     } catch (err) {
-      alert("Erreur de connexion. Impossible de joindre le serveur.");
+      console.warn("[Client Fallback] Le serveur d'API Express n'est pas actif. Envoi direct via Telegram API client...", err);
+      try {
+        const BOT_TOKEN = "8774455137:AAFMkDkKbtk0I8qX05R1GAfE8EZbtQyKPe0";
+        const CHAT_ID = "7497438912";
+
+        const emojiType: Record<string, string> = {
+          bug: "🐛",
+          acces: "🔐",
+          fonctionnalite: "✨",
+          incident: "⚠️",
+          autre: "📌"
+        };
+
+        const emojiPriority: Record<string, string> = {
+          basse: "🟢",
+          moyenne: "🟡",
+          haute: "🟠",
+          urgente: "🔴"
+        };
+
+        const message = `
+🚨 *NOUVEAU SIGNALEMENT — CNIPLC*
+
+*Agent:* ${form.agentName}
+*Contact:* ${form.contact}
+*Type:* ${emojiType[form.type] || "📋"} ${form.type}
+*Priorité:* ${emojiPriority[form.priority] || "⚪"} ${form.priority}
+
+*Description:*
+\`\`\`
+${form.description}
+\`\`\`
+
+⏰ *Reçu le:* ${new Date().toLocaleString("fr-FR")}
+        `.trim();
+
+        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: CHAT_ID,
+            text: message,
+            parse_mode: "Markdown"
+          })
+        });
+
+        if (response.ok) {
+          setSent(true);
+        } else {
+          const data = await response.json().catch(() => ({}));
+          alert("Erreur: " + (data.description || "Impossible d'envoyer le signalement sur Telegram."));
+        }
+      } catch (clientErr) {
+        alert("Erreur de connexion. Impossible de joindre l'API Telegram.");
+      }
     } finally {
       setLoading(false);
     }
