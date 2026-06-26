@@ -104,13 +104,27 @@ export function getOS(): string {
   return 'Inconnu';
 }
 
+export function safeUUID(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 // Generate a stable Client ID per browser tab session
 function getSessionClientId(): string {
-  const stored = sessionStorage.getItem('officelink_client_id');
-  if (stored) return stored;
-  const id = `client-${crypto.randomUUID()}`;
-  sessionStorage.setItem('officelink_client_id', id);
-  return id;
+  try {
+    const stored = sessionStorage.getItem('officelink_client_id');
+    if (stored) return stored;
+    const id = `client-${safeUUID()}`;
+    sessionStorage.setItem('officelink_client_id', id);
+    return id;
+  } catch (e) {
+    return `client-${safeUUID()}`;
+  }
 }
 
 // Generate a stable-ish local IP mock per session
@@ -156,6 +170,25 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
       console.warn("Sélection de dossier annulée ou erreur", err);
     }
   };
+
+  const cleanupActivityLogs = async (userId: string | undefined | null) => {
+    if (!userId) return;
+    try {
+      const { data: allLogs } = await supabase
+        .from('activity_logs')
+        .select('id')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      
+      if (allLogs && allLogs.length > 20) {
+        const idsToDelete = allLogs.slice(20).map(l => l.id);
+        await supabase.from('activity_logs').delete().in('id', idsToDelete);
+      }
+    } catch (e) {
+      console.error("Erreur lors du nettoyage de l'historique:", e);
+    }
+  };
+
 
   // === REFS for stable references (prevents useEffect dependency loops) ===
   const peerConnections = useRef<{ [clientId: string]: RTCPeerConnection }>({});
@@ -310,6 +343,7 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
           action: 'RECEPTION_FICHIER',
           description: `Réception de "${transfer.fileName}" (${formatSize(transfer.fileSize)}) réussie. IP Source: ${peerIP}, IP Dest: ${myIP}, Durée: ${duration}s, SHA-256: Valide (${calculatedHash.substring(0, 8)}).`
         });
+        await cleanupActivityLogs(myIdRef.current);
       } catch {}
       
       processQueue();
@@ -418,6 +452,7 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
               action: 'ENVOI_FICHIER',
               description: `Envoi de "${transfer.fileName}" (${formatSize(transfer.fileSize)}) réussi. IP Source: ${myIP}, IP Dest: ${peerIP}, Durée: ${duration}s, SHA-256: ${transfer.sha256}.`
             });
+            await cleanupActivityLogs(myIdRef.current);
           } catch {}
 
           processQueue();
@@ -937,6 +972,7 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
             action: 'RECEPTION_FICHIER_CLOUD',
             description: `Réception Cloud Relais de "${fileName}" (${formatSize(fileSize)}) réussie. Source: ${senderEmail}.`
           });
+          await cleanupActivityLogs(myIdRef.current);
         } catch {}
       })
       .on('presence', { event: 'sync' }, () => {
@@ -1026,7 +1062,7 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
     if (!myIdRef.current || !myEmailRef.current) return;
 
     const msg: P2PMessage = {
-      id: crypto.randomUUID(),
+      id: safeUUID(),
       senderId: myIdRef.current,
       senderEmail: myEmailRef.current,
       text,
@@ -1106,6 +1142,7 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
           action: 'ENVOI_FICHIER_CLOUD',
           description: `Envoi Cloud Relais de "${file.name}" (${formatSize(file.size)}) réussi. Source IP: ${myIP}, Durée: ${duration}s.`
         });
+        await cleanupActivityLogs(myIdRef.current);
       } catch {}
 
       processQueue();
@@ -1129,7 +1166,7 @@ export function WebRTCProvider({ children, session }: { children: React.ReactNod
   const sendFile = useCallback((targetPeerId: string, file: File, priority: 'high' | 'normal' | 'low' = 'normal') => {
     if (!myIdRef.current || !myEmailRef.current) return;
 
-    const transferId = crypto.randomUUID();
+    const transferId = safeUUID();
     const newTransfer: FileTransfer = {
       id: transferId,
       fileName: file.name,

@@ -69,13 +69,27 @@ class OfficeLinkErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorB
 }
 
 
-function getDeviceId(): string {
-  let id = localStorage.getItem('officelink_device_id');
-  if (!id) {
-    id = `device-${crypto.randomUUID()}`;
-    localStorage.setItem('officelink_device_id', id);
+export function safeUUID(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
   }
-  return id;
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function getDeviceId(): string {
+  try {
+    let id = localStorage.getItem('officelink_device_id');
+    if (!id) {
+      id = `device-${safeUUID()}`;
+      localStorage.setItem('officelink_device_id', id);
+    }
+    return id;
+  } catch (e) {
+    return `device-${safeUUID()}`;
+  }
 }
 
 export default function OfficeLinkLayout() {

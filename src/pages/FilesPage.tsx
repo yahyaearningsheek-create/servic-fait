@@ -8,7 +8,15 @@ import {
 
 export default function FilesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [selectedPeerIds, setSelectedPeerIds] = useState<string[]>(searchParams.get('peerId') ? [searchParams.get('peerId') as string] : []);
+  const [selectedPeerIds, setSelectedPeerIds] = useState<string[]>(() => {
+    const fromUrl = searchParams.get('peerId');
+    if (fromUrl) return [fromUrl];
+    const saved = localStorage.getItem('officelink_selected_peers');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return [];
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [transferPriority, setTransferPriority] = useState<'high' | 'normal' | 'low'>('normal');
   const [isDragging, setIsDragging] = useState(false);
@@ -21,6 +29,11 @@ export default function FilesPage() {
       setSelectedPeerIds(prev => [...prev, pId]);
     }
   }, [searchParams]);
+
+  // Persist selectedPeerIds in localStorage
+  useEffect(() => {
+    localStorage.setItem('officelink_selected_peers', JSON.stringify(selectedPeerIds));
+  }, [selectedPeerIds]);
 
   useEffect(() => {
     // Prevent browser from opening dropped files globally
